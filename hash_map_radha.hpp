@@ -7,31 +7,23 @@ struct HashMap {
     size_t my_size;
     size_t size() const noexcept;
 
+    HashMap(size_t size);
+
     /* 
     "A common way to implement a distributed array in UPC++ is to create a C++ vector of upcxx::global_ptrs 
     that point to arrays allocated in the shared segment on each rank."
     */
 
-    // Allocate arrays in the shared segment
-    // Q: how big should the array be? is the global_ptr of the right type?
-    //std::vector<kmer_pair> data;
-    //std::vector<int> used;
-    //upcxx::global_ptr<int> data_g = upcxx::new_array<kmer_pair>(my_size);
-    //upcxx::global_ptr<int> used_g = upcxx::new_array<int>(my_size);
-
-    // Downcast the global pointers
-    //int *data_l = data_g.local();
-    //int *used_l = used_g.local();
+    // Each local hash table in the shared memory should be smaller
+    size_t shared_table_size = (size / upcxx::rank_n()) + 1
 
     // Create the distributed objects
-    upcxx::dist_object<upcxx::global_ptr<int>> data_g(upcxx::new_array<kmer_pair>(my_size));
-    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(my_size));
+    upcxx::dist_object<upcxx::global_ptr<int>> data_g(upcxx::new_array<kmer_pair>(shared_table_size));
+    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(shared_table_size));
 
     // Downcast the global pointers
     int *data = data_g->local();
     int *used = used_g->local();
-
-    HashMap(size_t size);
 
     // Most important functions: insert and retrieve
     // k-mers from the hash table.
@@ -56,6 +48,11 @@ HashMap::HashMap(size_t size) {
 }
 
 bool HashMap::insert(const kmer_pair& kmer) {
+    /* 
+        Radha says: very confused about what specifically needs to be communicated here.
+       I *think* the idea is that if there's no space in the local processes' hash, it needs to either
+       send the kmer to the next process, or get ahold of the hash of the next process.
+       */
     // Get the hash code
     uint64_t hash = kmer.hash();
     uint64_t probe = 0;
