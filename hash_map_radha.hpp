@@ -4,9 +4,13 @@
 #include <upcxx/upcxx.hpp>
 
 struct HashMap {
-    size_t my_size;
-    size_t size() const noexcept;
-
+    // Size of the full hash table
+    size_t my_size_full; 
+    size_t full_size() const noexcept; 
+    // Size of the shared component of the hash table
+    size_t my_size_loc;
+    size_t shared_size() const noexcept; 
+   
     HashMap(size_t size);
 
     /* 
@@ -15,15 +19,19 @@ struct HashMap {
     */
 
     // Each local hash table in the shared memory should be smaller
-    size_t shared_table_size = (size / upcxx::rank_n()) + 1
+    my_size_loc = (my_size_full / upcxx::rank_n()) + 1
 
     // Create the distributed objects
-    upcxx::dist_object<upcxx::global_ptr<int>> data_g(upcxx::new_array<kmer_pair>(shared_table_size));
-    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(shared_table_size));
+    upcxx::dist_object<upcxx::global_ptr<int>> data_g(upcxx::new_array<kmer_pair>(my_size_loc));
+    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(my_size_loc));
 
-    // Downcast the global pointers
-    int *data = data_g->local();
-    int *used = used_g->local();
+    // Create pointers for the data and used objects of the processor that contains the relevant part of the hash map
+    upcxx::global_ptr<double> data_pointer;
+    upcxx::global_ptr<double> used_pointer;
+
+    // Create objects for the data and used objects of the processor that contains the relevant part of the hash map
+    std::vector<kmer_pair> data;
+    std::vector<int> used;
 
     // Most important functions: insert and retrieve
     // k-mers from the hash table.
@@ -42,23 +50,33 @@ struct HashMap {
 };
 
 HashMap::HashMap(size_t size) {
-    my_size = size;
-    data.resize(size);
-    used.resize(size, 0);
+    my_size_full = size;
+    data.resize(size); // this needs to be changed
+    used.resize(size, 0); // this needs to be changed
 }
 
 bool HashMap::insert(const kmer_pair& kmer) {
-    /* 
-        Radha says: very confused about what specifically needs to be communicated here.
-       I *think* the idea is that if there's no space in the local processes' hash, it needs to either
-       send the kmer to the next process, or get ahold of the hash of the next process.
-       */
     // Get the hash code
     uint64_t hash = kmer.hash();
     uint64_t probe = 0;
     bool success = false;
+    uint64_t slot = (hash + probe) % full_size();
+
+    // Get the local pointer of the processor that has this slot
+    int target_proc_index =  slot / shared_size()
+
+    // Fetch the pointers for for data and used the target processor
+    // What if this proc is full??
+    // This should be atomic fetch?
+    data_pointer = data_g.fetch(target_proc_index).wait();
+    used_pointer = used_g.fetch(target_proc_index).wait();
+
+    // Get the values of data and used in the pointers
+    data = upcxx::rget(data_pointer).wait(); // change to atomic!! should this be a future??
+    used = upcxx::rget(used_pointer).wait(); // change to atomic!!
+
     do {
-        uint64_t slot = (hash + probe++) % size();
+        slot = (hash + probe++) % full_size();  // Increment the slot
         success = request_slot(slot);
         if (success) {
             write_slot(slot, kmer);
@@ -98,4 +116,5 @@ bool HashMap::request_slot(uint64_t slot) {
     }
 }
 
-size_t HashMap::size() const noexcept { return my_size; }
+size_t HashMap::full_size() const noexcept { return my_size_full; }
+size_t HashMap::shared_size() const noexcept { return my_size_loc; }
