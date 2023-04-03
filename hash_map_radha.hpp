@@ -4,16 +4,18 @@
 #include <upcxx/upcxx.hpp>
 
 struct HashMap {
-    // Size of the full hash table
-    size_t my_size_full; 
-    size_t full_size() const noexcept; 
-    // Size of the shared component of the hash table
-    size_t my_size_loc;
-    size_t shared_size() const noexcept; 
-   
-    HashMap(size_t size);
 
-        // Create pointers for the data and used objects of the processor that contains the relevant part of the hash map
+    size_t full_size;
+    size_t size() const noexcept;
+
+    size_t local_size;
+    size_t local_hash_size() const noexcept;
+
+    // Create the distributed objects
+    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *data_g1;
+    upcxx::dist_object<upcxx::global_ptr<int>> *used_g1;
+
+     // Create pointers for the data and used objects of the processor that contains the relevant part of the hash map
     upcxx::global_ptr<double> data_pointer;
     upcxx::global_ptr<double> used_pointer;
 
@@ -21,6 +23,7 @@ struct HashMap {
     std::vector<kmer_pair> data;
     std::vector<int> used;
 
+    HashMap(size_t full_size, size_t local_size, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g, upcxx::dist_object<upcxx::global_ptr<int>> &used_g);
 
     // Most important functions: insert and retrieve
     // k-mers from the hash table.
@@ -38,48 +41,41 @@ struct HashMap {
     bool slot_used(uint64_t slot);
 };
 
-HashMap::HashMap(size_t size) {
-    my_size_full = size;
-
-    // Each local hash table in the shared memory should be smaller
-    my_size_loc = my_size_full / upcxx::rank_n() + 1;
-
-    // Create the distributed objects
-    upcxx::dist_object<upcxx::global_ptr<int>> data_g(upcxx::new_array<kmer_pair>(my_size_loc));
-    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(my_size_loc));
-
-
-
+HashMap::HashMap(size_t full_size, size_t local_size, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g, upcxx::dist_object<upcxx::global_ptr<int>> &used_g) {
+    
+    full_size = full_size;
+    local_size = local_size;
+    data_g1 = &data_g;
+    used_g1 = &used_g;
 
 }
 
 bool HashMap::insert(const kmer_pair& kmer) {
-    // Get the hash code
     uint64_t hash = kmer.hash();
     uint64_t probe = 0;
     bool success = false;
-    uint64_t slot = (hash + probe) % full_size();
+    uint64_t slot = (hash + probe) % size();
 
     // Get the local pointer of the processor that has this slot
-    int target_proc_index = slot / shared_size();
+    int target_proc_index = slot / local_hash_size();
 
     // Fetch the pointers for for data and used the target processor
     // What if this proc is full??
     // This should be atomic fetch?
-    data_pointer = data_g.fetch(target_proc_index).wait();
-    used_pointer = used_g.fetch(target_proc_index).wait();
+    //data_pointer = data_g1.fetch(target_proc_index).wait();
+    used_pointer = used_g1.fetch(target_proc_index).wait();
 
     // Get the values of data and used in the pointers
     data = upcxx::rget(data_pointer).wait(); // change to atomic!! should this be a future??
     used = upcxx::rget(used_pointer).wait(); // change to atomic!!
 
     do {
-        slot = (hash + probe++) % full_size();  // Increment the slot
+        uint64_t slot = (hash + probe++) % size();
         success = request_slot(slot);
         if (success) {
             write_slot(slot, kmer);
         }
-    } while (!success && probe < full_size());
+    } while (!success && probe < size());
     return success;
 }
 
@@ -87,15 +83,17 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     uint64_t hash = key_kmer.hash();
     uint64_t probe = 0;
     bool success = false;
+
     do {
-        uint64_t slot = (hash + probe++) % full_size();
+
+        uint64_t slot = (hash + probe++) % size();
         if (slot_used(slot)) {
             val_kmer = read_slot(slot);
             if (val_kmer.kmer == key_kmer) {
                 success = true;
             }
         }
-    } while (!success && probe < full_size());
+    } while (!success && probe < size());
     return success;
 }
 
@@ -114,5 +112,6 @@ bool HashMap::request_slot(uint64_t slot) {
     }
 }
 
-size_t HashMap::full_size() const noexcept { return my_size_full; }
-size_t HashMap::shared_size() const noexcept { return my_size_loc; }
+size_t HashMap::size() const noexcept { return full_size; }
+
+size_t HashMap::local_hash_size() const noexcept { return local_size; }
