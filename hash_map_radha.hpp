@@ -51,7 +51,7 @@ bool HashMap::insert(const kmer_pair& kmer) {
     uint64_t global_slot = hash % size();
 
     // Useful atomic domain
-    upcxx::atomic_domain<int> ad({upcxx::atomic_op::load, upcxx::atomic_op::add});
+    upcxx::atomic_domain<int> ad({upcxx::atomic_op::fetch_add});
 
     if (kmer.kmer.get() == "AAACGGGCGGTAAAAAAAA") {std::cout << "HERE" << std::endl;}
 
@@ -84,16 +84,12 @@ bool HashMap::insert(const kmer_pair& kmer) {
             //if (upcxx::rank_me() == 0) std::cout << "checking probe " << probe + local_slot << std::endl;
 
             // Iterate through used of the target processor
-            int is_slot_full = ad.load(target_proc_used_pointer+local_slot+probe, std::memory_order_relaxed).wait();
+            int is_slot_full = ad.fetch_add(target_proc_used_pointer+local_slot+probe, 1, std::memory_order_relaxed).wait();
             //if (upcxx::rank_me() == 0) std::cout << "probe value " << is_slot_full << std::endl;
-            //int is_slot_full = upcxx::rget(target_proc_used_pointer+local_slot+probe).wait();
 
             if (is_slot_full == 0) {
                     //
-                     //std::cout << "slot is full " << std::endl;
-                    //upcxx::rput(1, target_proc_used_pointer+local_slot+probe).wait();
-                    ad.fetch_add(target_proc_used_pointer+local_slot+probe, 1, std::memory_order_relaxed).wait();
-
+                    //std::cout << "slot is full " << std::endl;
                     // Store the kmer
                      upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
                      upcxx::rput(kmer, target_proc_data_pointer+local_slot+probe).wait();
@@ -118,7 +114,7 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     uint64_t global_slot = hash % size();
 
     // Useful atomic domain
-    upcxx::atomic_domain<int> ad({upcxx::atomic_op::load, upcxx::atomic_op::add});
+    upcxx::atomic_domain<int> ad({upcxx::atomic_op::load});
 
     if (upcxx::rank_me() == 0) std::cout << "key kmer " << key_kmer.get() << std::endl;
 
@@ -155,8 +151,9 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
                  upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
                     kmer_pair val_kmer = upcxx::rget(target_proc_data_pointer+local_slot+probe).wait();
                     //if (upcxx::rank_me() == 0) std::cout << "val kmer " << val_kmer.kmer.get() << std::endl;   
-
+ 
                 if (val_kmer.kmer == key_kmer) {
+                    std::cout << "found" << std::endl;
                     success = true;
                     ad.destroy();    
                     return success;      
