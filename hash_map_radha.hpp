@@ -53,21 +53,12 @@ bool HashMap::insert(const kmer_pair& kmer) {
     // Useful atomic domain
     upcxx::atomic_domain<int> ad({upcxx::atomic_op::fetch_add});
 
-    if (kmer.kmer.get() == "AAACGGGCGGTAAAAAAAA") {std::cout << "HERE" << std::endl;}
-
-    
-
     // Get the index of the processor that has the slot for the hash
     int target_proc_index = global_slot / local_size();
-
-    //if (upcxx::rank_me() == 0) std::cout << "hash: " <<  hash << "size: " << size() << "local size: " << local_size() << "global_slot: " << global_slot << "target: " << target_proc_index << std::endl;
 
  
     // We may need to consider multiple target processors as things get filled
     for (int next_proc = 0; next_proc < upcxx::rank_n(); next_proc++) {
-
-        //if (upcxx::rank_me() == 0) std::cout << "onto next proc " << next_proc << std::endl;
-
 
         target_proc_index = (target_proc_index + next_proc) % upcxx::rank_n();
         
@@ -81,15 +72,12 @@ bool HashMap::insert(const kmer_pair& kmer) {
 
         for (int probe = 0; (probe + local_slot) < local_size(); probe++) {
 
-            //if (upcxx::rank_me() == 0) std::cout << "checking probe " << probe + local_slot << std::endl;
 
             // Iterate through used of the target processor
             int is_slot_full = ad.fetch_add(target_proc_used_pointer+local_slot+probe, 1, std::memory_order_relaxed).wait();
-            //if (upcxx::rank_me() == 0) std::cout << "probe value " << is_slot_full << std::endl;
 
             if (is_slot_full == 0) {
-                    //
-                    //std::cout << "slot is full " << std::endl;
+
                     // Store the kmer
                      upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
                      upcxx::rput(kmer, target_proc_data_pointer+local_slot+probe).wait();
@@ -116,15 +104,11 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     // Useful atomic domain
     upcxx::atomic_domain<int> ad({upcxx::atomic_op::load});
 
-    if (upcxx::rank_me() == 0) std::cout << "key kmer " << key_kmer.get() << std::endl;
-
     // Get the index of the processor that has the slot for the hash
     int target_proc_index = global_slot / local_size();
  
     // We may need to consider multiple target processors as things get filled
     for (int next_proc = 0; next_proc < upcxx::rank_n(); next_proc++) {
-
-        std::cout << "checking proc " << next_proc << std::endl;
 
         target_proc_index = (target_proc_index + next_proc) % upcxx::rank_n();
 
@@ -136,36 +120,24 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
         if (next_proc == 0) {local_slot = global_slot % local_size();}
         else {local_slot = 0;}
 
-        std::cout << "next proc " << next_proc << std::endl;
-
         for (int probe = 0; (probe + local_slot) < local_size(); probe++) {
 
             // Iterate through used of the target processor
-            // Makr this atomic!!
             int is_slot_full = ad.load(target_proc_used_pointer+local_slot+probe, std::memory_order_relaxed).wait();
-            //int is_slot_full = upcxx::rget(target_proc_used_pointer+local_slot+probe).wait();
-            //std::cout << is_slot_full << std::endl;
             
             if (is_slot_full > 0) {
-                if (is_slot_full > 1) std::cout << "super slot " << is_slot_full << std::endl;
                  upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
-                    kmer_pair val_kmer = upcxx::rget(target_proc_data_pointer+local_slot+probe).wait();
-                    //if (upcxx::rank_me() == 0) std::cout << "val kmer " << val_kmer.kmer.get() << std::endl;   
+                    val_kmer = upcxx::rget(target_proc_data_pointer+local_slot+probe).wait();
  
                 if (val_kmer.kmer == key_kmer) {
-                    std::cout << "found" << std::endl;
                     success = true;
                     ad.destroy();    
                     return success;      
-                }
-
-            
-                  
+                } 
                     
                 }
             }
         }
-        std::cout << "can't find  key" << key_kmer.get() << std::endl;   
         ad.destroy();    
         return success;
 
