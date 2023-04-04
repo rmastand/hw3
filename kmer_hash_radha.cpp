@@ -81,7 +81,6 @@ int main(int argc, char** argv) {
 
     std::vector<kmer_pair> start_nodes;
 
-
     for (auto& kmer : kmers) {
 
         bool success = hashmap.insert(kmer);
@@ -102,20 +101,22 @@ int main(int argc, char** argv) {
     if (run_type != "test") {
         BUtil::print("Finished inserting in %lf\n", insert_time);
     }
+
+
     upcxx::barrier();
 
     auto start_read = std::chrono::high_resolution_clock::now();
+
 
     std::list<std::list<kmer_pair>> contigs;
 
     for (const auto& start_kmer : start_nodes) {
         std::list<kmer_pair> contig;
         contig.push_back(start_kmer);
+        
         while (contig.back().forwardExt() != 'F') {
             kmer_pair kmer;
-
             bool success = hashmap.find(contig.back().next_kmer(), kmer);
-
             if (!success) {
                 throw std::runtime_error("Error: k-mer not found in hashmap.");
             }
@@ -124,7 +125,6 @@ int main(int argc, char** argv) {
         contigs.push_back(contig);
     }
 
- 
 
     auto end_read = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
@@ -134,6 +134,7 @@ int main(int argc, char** argv) {
     std::chrono::duration<double> insert = end_insert - start;
     std::chrono::duration<double> total = end - start;
 
+
     int numKmers = std::accumulate(
         contigs.begin(), contigs.end(), 0,
         [](int sum, const std::list<kmer_pair>& contig) { return sum + contig.size(); });
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
     if (run_type != "test") {
         BUtil::print("Assembled in %lf total\n", total.count());
     }
+
 
     if (run_type == "verbose") {
         printf("Rank %d reconstructed %d contigs with %d nodes from %d start nodes."
@@ -158,5 +160,7 @@ int main(int argc, char** argv) {
     }
 
     upcxx::finalize();
+
+
     return 0;
 }
