@@ -51,9 +51,7 @@ int main(int argc, char** argv) {
     size_t hash_table_size = n_kmers * (1.0 / 0.5);
 
     // Size of each processor's hash table
-    size_t proc_hash_table_size = hash_table_size / upcxx::rank_n() + 1;
-    // if (upcxx::rank_me() == 0) std::cout << hash_table_size <<  " " << proc_hash_table_size << std::endl;
- 
+    size_t proc_hash_table_size = hash_table_size / upcxx::rank_n() + 1; 
 
     // Create the distributed objects here for data and used
     upcxx::dist_object<upcxx::global_ptr<kmer_pair>> data_g(upcxx::new_array<kmer_pair>(proc_hash_table_size));
@@ -85,9 +83,7 @@ int main(int argc, char** argv) {
 
 
     for (auto& kmer : kmers) {
-        //BUtil::print(kmer.kmer.get());
-        //BUtil::print("\n");
-        //std::cout << "inserting kmer " << kmer.kmer.get() << " with forward extension " << kmer.forwardExt() << " and backwrd extension " << kmer.backwardExt() << std::endl;
+
         bool success = hashmap.insert(kmer);
         if (!success) {
             throw std::runtime_error("Error: HashMap is full!");
@@ -95,9 +91,6 @@ int main(int argc, char** argv) {
 
         if (kmer.backwardExt() == 'F') {
             start_nodes.push_back(kmer);
-            BUtil::print("Found a start node 'n");
-            BUtil::print(kmer.kmer.get());
-            BUtil::print("\n");
 
         }
     }
@@ -120,10 +113,9 @@ int main(int argc, char** argv) {
         contig.push_back(start_kmer);
         while (contig.back().forwardExt() != 'F') {
             kmer_pair kmer;
-            std::cout << "looking for kmer " << contig.back().next_kmer().get() << " with forward extension " << contig.back().forwardExt() << " and backwrd extension " << contig.back().backwardExt() << std::endl;
-            std::cout << "and " << kmer.kmer.get() << std::endl;
 
             bool success = hashmap.find(contig.back().next_kmer(), kmer);
+
             if (!success) {
                 throw std::runtime_error("Error: k-mer not found in hashmap.");
             }
