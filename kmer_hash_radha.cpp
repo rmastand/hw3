@@ -13,6 +13,7 @@
 #include "read_kmers.hpp"
 
 #include "butil.hpp"
+#include <iostream>
 
 int main(int argc, char** argv) {
     upcxx::init();
@@ -27,7 +28,7 @@ int main(int argc, char** argv) {
     std::string run_type = "";
 
     if (argc >= 3) {
-        run_type = std::string(argv[2]);
+        run_type = "verbose"; //std::string(argv[2]);
     }
 
     std::string test_prefix = "test";
@@ -51,15 +52,25 @@ int main(int argc, char** argv) {
 
     // Size of each processor's hash table
     size_t proc_hash_table_size = hash_table_size / upcxx::rank_n() + 1;
+    // if (upcxx::rank_me() == 0) std::cout << hash_table_size <<  " " << proc_hash_table_size << std::endl;
+ 
 
-    // Create the distributed objects here to keep them in scope
+    // Create the distributed objects here for data and used
     upcxx::dist_object<upcxx::global_ptr<kmer_pair>> data_g(upcxx::new_array<kmer_pair>(proc_hash_table_size));
     upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(proc_hash_table_size));
 
-    // set used to zero
+    // Initialize the processor's used to be 0
+    int *used = used_g->local();
+    for(int i = 0; i < proc_hash_table_size; i++) {
+      used[i] = 0; 
+   }
+
+   for(int i = 0; i < proc_hash_table_size; i++) {
+      used[i] = 0; 
+   }
 
     // Instantiate the hash table
-    HashMap hashmap(proc_hash_table_size, hash_table_size, data_g, used_g);
+    HashMap hashmap(hash_table_size, proc_hash_table_size, data_g, used_g);
 
     if (run_type == "verbose") {
         BUtil::print("Initializing hash table of size %d for %d kmers.\n", hash_table_size,
@@ -77,6 +88,8 @@ int main(int argc, char** argv) {
     std::vector<kmer_pair> start_nodes;
 
     for (auto& kmer : kmers) {
+        //BUtil::print(kmer.kmer.get());
+        //BUtil::print("\n");
         bool success = hashmap.insert(kmer);
         if (!success) {
             throw std::runtime_error("Error: HashMap is full!");
@@ -86,6 +99,7 @@ int main(int argc, char** argv) {
             start_nodes.push_back(kmer);
         }
     }
+    
     auto end_insert = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
 
@@ -103,6 +117,7 @@ int main(int argc, char** argv) {
         contig.push_back(start_kmer);
         while (contig.back().forwardExt() != 'F') {
             kmer_pair kmer;
+
             bool success = hashmap.find(contig.back().next_kmer(), kmer);
             if (!success) {
                 throw std::runtime_error("Error: k-mer not found in hashmap.");
@@ -111,6 +126,9 @@ int main(int argc, char** argv) {
         }
         contigs.push_back(contig);
     }
+
+
+    
 
     auto end_read = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
