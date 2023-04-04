@@ -2,28 +2,21 @@
 
 #include "kmer_t.hpp"
 #include <upcxx/upcxx.hpp>
+#include <iostream>
 
 struct HashMap {
 
-    size_t full_size;
+    size_t full_table_size;
     size_t size() const noexcept;
 
-    size_t local_size;
-    size_t local_hash_size() const noexcept;
+    size_t local_table_size;
+    size_t local_size() const noexcept;
 
     // Create the distributed objects
-    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *data_g1;
-    upcxx::dist_object<upcxx::global_ptr<int>> *used_g1;
+    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *data_g;
+    upcxx::dist_object<upcxx::global_ptr<int>> *used_g;
 
-     // Create pointers for the data and used objects of the processor that contains the relevant part of the hash map
-    upcxx::global_ptr<double> data_pointer;
-    upcxx::global_ptr<double> used_pointer;
-
-    // Create objects for the data and used objects of the processor that contains the relevant part of the hash map
-    std::vector<kmer_pair> data;
-    std::vector<int> used;
-
-    HashMap(size_t full_size, size_t local_size, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g, upcxx::dist_object<upcxx::global_ptr<int>> &used_g);
+    HashMap(size_t full_table_size1, size_t local_table_size1, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g1, upcxx::dist_object<upcxx::global_ptr<int>> &used_g1);
 
     // Most important functions: insert and retrieve
     // k-mers from the hash table.
@@ -33,75 +26,164 @@ struct HashMap {
     // Helper functions
 
     // Write and read to a logical data slot in the table.
+    /*
     void write_slot(uint64_t slot, const kmer_pair& kmer);
     kmer_pair read_slot(uint64_t slot);
 
     // Request a slot or check if it's already used.
     bool request_slot(uint64_t slot);
     bool slot_used(uint64_t slot);
+    */
 };
 
-HashMap::HashMap(size_t full_size, size_t local_size, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g, upcxx::dist_object<upcxx::global_ptr<int>> &used_g) {
+HashMap::HashMap(size_t full_table_size1, size_t local_table_size1, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g1, upcxx::dist_object<upcxx::global_ptr<int>> &used_g1) {
     
-    full_size = full_size;
-    local_size = local_size;
-    data_g1 = &data_g;
-    used_g1 = &used_g;
+    full_table_size = full_table_size1;
+    local_table_size = local_table_size1;
+    data_g = &data_g1;
+    used_g = &used_g1;
 
 }
 
 bool HashMap::insert(const kmer_pair& kmer) {
     uint64_t hash = kmer.hash();
-    uint64_t probe = 0;
     bool success = false;
-    uint64_t slot = (hash + probe) % size();
+    uint64_t global_slot = hash % size();
 
-    // Get the local pointer of the processor that has this slot
-    int target_proc_index = slot / local_hash_size();
+    // Useful atomic domain
+    upcxx::atomic_domain<int> ad({upcxx::atomic_op::load, upcxx::atomic_op::add});
 
-    // Fetch the pointers for for data and used the target processor
-    // What if this proc is full??
-    // This should be atomic fetch?
-    //data_pointer = data_g1.fetch(target_proc_index).wait();
-    used_pointer = used_g1.fetch(target_proc_index).wait();
+    if (kmer.kmer.get() == "AAACGGGCGGTAAAAAAAA") {std::cout << "HERE" << std::endl;}
 
-    // Get the values of data and used in the pointers
-    data = upcxx::rget(data_pointer).wait(); // change to atomic!! should this be a future??
-    used = upcxx::rget(used_pointer).wait(); // change to atomic!!
+    
 
-    do {
-        uint64_t slot = (hash + probe++) % size();
-        success = request_slot(slot);
-        if (success) {
-            write_slot(slot, kmer);
+    // Get the index of the processor that has the slot for the hash
+    int target_proc_index = global_slot / local_size();
+
+    //if (upcxx::rank_me() == 0) std::cout << "hash: " <<  hash << "size: " << size() << "local size: " << local_size() << "global_slot: " << global_slot << "target: " << target_proc_index << std::endl;
+
+ 
+    // We may need to consider multiple target processors as things get filled
+    for (int next_proc = 0; next_proc < upcxx::rank_n(); next_proc++) {
+
+        //if (upcxx::rank_me() == 0) std::cout << "onto next proc " << next_proc << std::endl;
+
+
+        target_proc_index = (target_proc_index + next_proc) % upcxx::rank_n();
+        
+        // Get the pointer for used for that target processor
+        upcxx::global_ptr<int> target_proc_used_pointer = used_g->fetch(target_proc_index).wait();
+
+        // Determine the start of where we start looking for empty slots
+        uint64_t local_slot;
+        if (next_proc == 0) {local_slot =  global_slot % local_size();}
+        else {local_slot = 0;}
+
+        for (int probe = 0; (probe + local_slot) < local_size(); probe++) {
+
+            //if (upcxx::rank_me() == 0) std::cout << "checking probe " << probe + local_slot << std::endl;
+
+            // Iterate through used of the target processor
+            int is_slot_full = ad.load(target_proc_used_pointer+local_slot+probe, std::memory_order_relaxed).wait();
+            //if (upcxx::rank_me() == 0) std::cout << "probe value " << is_slot_full << std::endl;
+            //int is_slot_full = upcxx::rget(target_proc_used_pointer+local_slot+probe).wait();
+
+            if (is_slot_full == 0) {
+                    //
+                     //std::cout << "slot is full " << std::endl;
+                    //upcxx::rput(1, target_proc_used_pointer+local_slot+probe).wait();
+                    ad.fetch_add(target_proc_used_pointer+local_slot+probe, 1, std::memory_order_relaxed).wait();
+
+                    // Store the kmer
+                     upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
+                     upcxx::rput(kmer, target_proc_data_pointer+local_slot+probe).wait();
+
+                    success = true;
+                    ad.destroy();    
+
+                    return success;  
+                    
+                }
+            }
         }
-    } while (!success && probe < size());
-    return success;
-}
+
+        return success;
+    }
+
+
 
 bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     uint64_t hash = key_kmer.hash();
-    uint64_t probe = 0;
     bool success = false;
+    uint64_t global_slot = hash % size();
 
-    do {
+    // Useful atomic domain
+    upcxx::atomic_domain<int> ad({upcxx::atomic_op::load, upcxx::atomic_op::add});
 
-        uint64_t slot = (hash + probe++) % size();
-        if (slot_used(slot)) {
-            val_kmer = read_slot(slot);
-            if (val_kmer.kmer == key_kmer) {
-                success = true;
+    if (upcxx::rank_me() == 0) std::cout << "key kmer " << key_kmer.get() << std::endl;
+
+    // Get the index of the processor that has the slot for the hash
+    int target_proc_index = global_slot / local_size();
+ 
+    // We may need to consider multiple target processors as things get filled
+    for (int next_proc = 0; next_proc < upcxx::rank_n(); next_proc++) {
+
+        std::cout << "checking proc " << next_proc << std::endl;
+
+        target_proc_index = (target_proc_index + next_proc) % upcxx::rank_n();
+
+        // Get the pointers for data and used for that target processor
+        upcxx::global_ptr<int> target_proc_used_pointer = used_g->fetch(target_proc_index).wait();
+
+        // Determine the start of where we start looking for the hash
+        uint64_t local_slot;
+        if (next_proc == 0) {local_slot = global_slot % local_size();}
+        else {local_slot = 0;}
+
+        std::cout << "next proc " << next_proc << std::endl;
+
+        for (int probe = 0; (probe + local_slot) < local_size(); probe++) {
+
+            // Iterate through used of the target processor
+            // Makr this atomic!!
+            int is_slot_full = ad.load(target_proc_used_pointer+local_slot+probe, std::memory_order_relaxed).wait();
+            //int is_slot_full = upcxx::rget(target_proc_used_pointer+local_slot+probe).wait();
+            //std::cout << is_slot_full << std::endl;
+            
+            if (is_slot_full > 0) {
+                if (is_slot_full > 1) std::cout << "super slot " << is_slot_full << std::endl;
+                 upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
+                    kmer_pair val_kmer = upcxx::rget(target_proc_data_pointer+local_slot+probe).wait();
+                    //if (upcxx::rank_me() == 0) std::cout << "val kmer " << val_kmer.kmer.get() << std::endl;   
+
+                if (val_kmer.kmer == key_kmer) {
+                    success = true;
+                    ad.destroy();    
+                    return success;      
+                }
+
+            
+                  
+                    
+                }
             }
         }
-    } while (!success && probe < size());
-    return success;
-}
+        std::cout << "can't find  key" << key_kmer.get() << std::endl;   
+        ad.destroy();    
+        return success;
 
+    }
+
+
+
+
+/*
 bool HashMap::slot_used(uint64_t slot) { return used[slot] != 0; }
 
 void HashMap::write_slot(uint64_t slot, const kmer_pair& kmer) { data[slot] = kmer; }
 
 kmer_pair HashMap::read_slot(uint64_t slot) { return data[slot]; }
+
 
 bool HashMap::request_slot(uint64_t slot) {
     if (used[slot] != 0) {
@@ -111,7 +193,8 @@ bool HashMap::request_slot(uint64_t slot) {
         return true;
     }
 }
+*/
 
-size_t HashMap::size() const noexcept { return full_size; }
+size_t HashMap::size() const noexcept { return full_table_size; }
 
-size_t HashMap::local_hash_size() const noexcept { return local_size; }
+size_t HashMap::local_size() const noexcept { return local_table_size; }
