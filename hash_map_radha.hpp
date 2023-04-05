@@ -7,7 +7,7 @@
 struct HashMap {
 
     // Create the atomic domain here
-    upcxx::atomic_domain<int> ad = upcxx::atomic_domain<int>({upcxx::atomic_op::compare_exchange,upcxx::atomic_op::load});
+    upcxx::atomic_domain<int> ad = upcxx::atomic_domain<int>({upcxx::atomic_op::fetch_add,upcxx::atomic_op::load});
 
     size_t full_table_size;
     size_t size() const noexcept;
