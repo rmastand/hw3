@@ -210,7 +210,7 @@ size_t HashMap::local_size() const noexcept { return local_table_size; }
 
 kmer_pair* HashMap::get_send_buffer(int target_proc) { 
 
-    kmer_pair * tmp[buffer_size];
+    kmer_pair * tmp;
 
     for (int i = 0; i < buffer_size; i++) {
         std::cout <<  "k" << std::endl;
@@ -218,7 +218,8 @@ kmer_pair* HashMap::get_send_buffer(int target_proc) {
         std::cout <<  send_buff[buffer_size*target_proc + i].kmer.get() << std::endl;
     }
 
-    return *tmp; 
+    return 
+    tmp; 
 }
 
 HashMap::~HashMap() {
