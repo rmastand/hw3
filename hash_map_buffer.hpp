@@ -218,8 +218,7 @@ kmer_pair* HashMap::get_send_buffer(int target_proc) {
         std::cout <<  send_buff[buffer_size*target_proc + i].kmer.get() << std::endl;
     }
 
-    return 
-    tmp; 
+    return tmp; 
 }
 
 HashMap::~HashMap() {
