@@ -18,19 +18,22 @@ struct HashMap {
     std::vector<kmer_pair> data;
     std::vector<int> used;
 
-    int buffer_size;
+    size_t buffer_size;
     int* how_many_in_buffer;
-    // Downcast buffers
-    kmer_pair *send_buff;
-    kmer_pair *recv_buff;
 
-
+     // Downcasted buffers
+    //std::vector<kmer_pair>(upcxx::rank_n()) send_buff;
+    std::vector<kmer_pair> * send_buff;
+    //std::vector<kmer_pair>(upcxx::rank_n()) recv_buff;
 
     // Create the distributed objects
-    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *send_buffer_g;
-    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *recv_buffer_g;
+    //upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> *send_buffer_g;
+    upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> *recv_buffer_g;
 
-    HashMap(size_t full_table_size1, size_t local_table_size1, int buffer_size, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &send_buffer_g1,  upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &recv_buffer_g1);
+    HashMap(size_t full_table_size1, size_t local_table_size1, size_t buffer_size, 
+            std::vector<kmer_pair> * send_buff1,
+       // upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &send_buffer_g1, 
+        upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &recv_buffer_g1);
     ~HashMap();  
 
     // Most important functions: insert and retrieve
@@ -39,8 +42,9 @@ struct HashMap {
     bool find(const pkmer_t& key_kmer, kmer_pair& val_kmer);
     bool fill_buffer(const kmer_pair& kmer);
     bool local_inserts();
-    kmer_pair * get_send_buffer(int target_proc);
-
+    
+    upcxx::future<> send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf);
+   // upcxx::future<> send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> receiving_proc, std::vector<kmer_pair> buf, int sending_proc);
     // Helper functions
 
     // Write and read to a logical data slot in the table.
@@ -52,80 +56,145 @@ struct HashMap {
     bool slot_used(uint64_t slot);
 };
 
-HashMap::HashMap(size_t full_table_size1, size_t local_table_size1, int buffer_size1, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &send_buffer_g1, upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &recv_buffer_g1) {
-    
+HashMap::HashMap(size_t full_table_size1, size_t local_table_size1, size_t buffer_size1, 
+            std::vector<kmer_pair> * send_buff1,
+            //upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &send_buffer_g1,
+             upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &recv_buffer_g1) {
     full_table_size = full_table_size1;
     local_table_size = local_table_size1;
     buffer_size = buffer_size1;
 
-    send_buffer_g = &send_buffer_g1;
+    //send_buff = (*send_buffer_g)->local();
+    //send_buff = send_buffer_g->local();
+    //std::cout << "3" << std::endl;
+    //recv_buff = (*recv_buffer_g)->local();
+    send_buff = send_buff1;
+    //send_buffer_g = &send_buffer_g1;
     recv_buffer_g = &recv_buffer_g1;
-
     // Keeps track of how full the buffers are
     how_many_in_buffer = new int[upcxx::rank_n()];
     for (int i = 0; i < upcxx::rank_n(); i++) {
         how_many_in_buffer[i] = 0;
     }
-
-    send_buff = (*send_buffer_g)->local();
-    recv_buff = (*recv_buffer_g)->local();
-
+    // local copies of data and used
     data.resize(local_table_size);
     used.resize(local_table_size, 0);
 
 }
 
-bool HashMap::fill_buffer(const kmer_pair& kmer) {
+bool HashMap::insert(const kmer_pair& kmer) {
     uint64_t hash = kmer.hash();
     uint64_t global_slot = hash % size();
 
     // Get the index of the processor that has the slot for the hash
     int target_proc_index = global_slot / local_size();
 
-    // See where to insert the kmer in the buffer
-    int insert_index = buffer_size*target_proc_index + how_many_in_buffer[target_proc_index];
-    send_buff[insert_index] = kmer;
+    // Add the kmer to the buffer
+    send_buff[target_proc_index].push_back(kmer);
     how_many_in_buffer[target_proc_index]++;
 
+    // Send out any filled buffers
     if (how_many_in_buffer[target_proc_index] == buffer_size) {
-        return true;
+        // Now the buffer is full, so we need to do a rpc
+
+        std::cout << upcxx::rank_me() << " has full buffer and is sending to " << target_proc_index << std::endl;
+
+        // Get the pointer to the remove recv buffer
+        upcxx::global_ptr<std::vector<kmer_pair>> target_proc_buffer_pointer = recv_buffer_g->fetch(target_proc_index).wait();
+        // Get the sending processor rank so I can tell the recv buffer where to insert
+        int sending_rank = upcxx::rank_me();
+        // Send the buffer
+        send_buffer(target_proc_buffer_pointer, sending_rank, send_buff[target_proc_index]);//,  send_buff[target_proc_index], sending_rank);
+        
+        // Empty the sending buffer
+        send_buff[target_proc_index].clear();
+        how_many_in_buffer[target_proc_index] = 0;
+
     }
 
-    return false;
+    /*
+    // Check if any receive buffers are filled and locally hash
+    for (int i = 0 ; i < upcxx::rank_me(); i++) {
 
+        unsigned int recv_buff_size = recv_buff[i].size();
+
+        if (recv_buff_size > 0) {
+
+            // run for loop from 0 to vecSize
+            for (unsigned int j = 0; j < recv_buff_size; j++) {
+
+                // Remove the front of the vector
+                // Note elements are added to the back of the vector
+                kmer_pair working_kmer = recv_buff[i].front();
+                recv_buff[i].erase(recv_buff[i].begin());
+
+                uint64_t local_hash = working_kmer.hash();
+                uint64_t local_slot = (hash % size() ) % local_size();
+                uint64_t probe = 0;
+                bool success = false;
+                do {
+                    uint64_t slot = (local_slot + probe++) % local_size();
+                    success = request_slot(slot);
+                    if (success) {
+                        write_slot(slot, working_kmer);
+                    }
+                } while (!success && probe < local_size());
+
+                    return false;     
+
+                    
+
+            }
+    }   
+        
+    }
+    */
+return true;
 }
 
-bool HashMap::local_inserts() {
+///*
+upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf) {
+  
+  return upcxx::rpc(remote_dst.where(),
+    [](const upcxx::global_ptr<std::vector<kmer_pair>> &dst, const int & sender_rank, upcxx::view<std::vector<kmer_pair>> &buf_in_rpc) {
+      
+      //
+        std::vector<kmer_pair> * dst_recv_buff = dst.local(); 
+        std::cout << sender_rank << std::endl;
 
-    bool success;
+        //for (auto kmer_it: buf_in_rpc) {
+            //dst_recv_buff[sender_rank].push_back(*&kmer_it);
+            //td::cout << kmer_it[0].kmer.get() << std::endl;
+         //   std::cout << "a" << std::endl;
 
-    for (int ii = 0; ii < buffer_size*upcxx::rank_n(); ii++) {
+        //}
+     
+    },
+    remote_dst, sending_rank, upcxx::make_view(buf.begin(), buf.end()));
+}
+//*/
 
-        kmer_pair kmer = recv_buff[ii];
+/*
 
-        int probe = 0;
-        uint64_t hash = kmer.hash();
-        uint64_t global_slot = hash % size();
-        bool success = false;
+upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> receiving_proc, std::vector<kmer_pair> buf, int sending_proc) { 
+                           
+    return upcxx::rpc(receiving_proc,
+                      // lambda to insert the key-value pair
+                      [&](upcxx::global_ptr<std::vector<kmer_pair>>& dst, 
+                                int sending_proc, std::vector<kmer_pair> buf) {
+                        // insert into the local map at the target
 
-         // Determine the start of where we start looking for empty slots
-        uint64_t local_slot =  global_slot % local_size();
+                        std::vector<kmer_pair> * dst_recv_buff = receiving_proc.local(); 
 
-        do {
-            uint64_t slot = (local_slot + probe++) % local_size();;
-            success = request_slot(slot);
-            if (success) {
-                write_slot(slot, kmer);
-            }
-                } while (!success && probe < size());
-        }
+                         for (auto& kmer : buf) {
 
-        return success;
+                            dst_recv_buff[sending_proc].push_back(kmer);
 
-    }
+                         }
 
-
-
+                      }, receiving_proc, sending_proc, buf);
+}
+*/
 
 /*
 
@@ -208,21 +277,10 @@ size_t HashMap::size() const noexcept { return full_table_size; }
 
 size_t HashMap::local_size() const noexcept { return local_table_size; }
 
-kmer_pair* HashMap::get_send_buffer(int target_proc) { 
-
-    kmer_pair * tmp;
-
-    for (int i = 0; i < buffer_size; i++) {
-        std::cout <<  "k" << std::endl;
-        tmp[i] = send_buff[buffer_size*target_proc + i];
-        std::cout <<  send_buff[buffer_size*target_proc + i].kmer.get() << std::endl;
-    }
-
-    return tmp; 
-}
 
 HashMap::~HashMap() {
     // Need to destroy the atomic domain when the hashmap is destroyed
     ad.destroy();
     delete [] how_many_in_buffer;
 }
+
