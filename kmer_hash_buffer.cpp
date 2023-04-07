@@ -50,9 +50,7 @@ int main(int argc, char** argv) {
     // Load factor of 0.5
     size_t hash_table_size = n_kmers * (1.0 / 0.5);
     int num_procs = upcxx::rank_n();
-    size_t buffer_size = 10;
 
-    
 
     // Size of each processor's hash table
     size_t proc_hash_table_size = hash_table_size / num_procs + 1; 
@@ -72,7 +70,7 @@ int main(int argc, char** argv) {
     upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(proc_hash_table_size));
 
     // Instantiate the hash table
-    HashMap hashmap(hash_table_size, proc_hash_table_size, buffer_size, send_buffer, recv_buffer_g, data_g, used_g);
+    HashMap hashmap(hash_table_size, proc_hash_table_size, send_buffer, recv_buffer_g, data_g, used_g);
     if (run_type == "verbose") {
         BUtil::print("Initializing hash table of size %d for %d kmers.\n", hash_table_size,
                      n_kmers);
@@ -100,13 +98,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // clean up to clear the buffer
+    // Clean up to clear the buffer
     upcxx::barrier();
     hashmap.send_all_buffers();
     upcxx::barrier();
     hashmap.clear_buffer();
-
-
 
     auto end_insert = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
@@ -115,8 +111,6 @@ int main(int argc, char** argv) {
     if (run_type != "test") {
         BUtil::print("Finished inserting in %lf\n", insert_time);
     }
-
-
     upcxx::barrier();
 
     auto start_read = std::chrono::high_resolution_clock::now();
