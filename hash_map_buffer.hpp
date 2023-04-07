@@ -46,6 +46,9 @@ struct HashMap {
     bool send_all_buffers();
     
     upcxx::future<> send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf);
+    upcxx::future<kmer_pair> find_rpc(upcxx::global_ptr<int> remote_dst_used, upcxx::global_ptr<kmer_pair> remote_dst_data, 
+                            const pkmer_t &kmer_key_to_find, int slot_to_start, int local_proc_size);
+    
     // Helper functions
 
     // Write and read to a logical data slot in the table.
@@ -113,7 +116,7 @@ bool HashMap::insert(const kmer_pair& kmer) {
 
         // Get the pointer to the remove recv buffer
         upcxx::global_ptr<std::vector<kmer_pair>> target_proc_buffer_pointer = recv_buffer_g->fetch(target_proc_index).wait();
-        
+
         // Send the buffer
         send_buffer(target_proc_buffer_pointer, my_rank, send_buff[target_proc_index]);//,  send_buff[target_proc_index], sending_rank);
         
@@ -136,7 +139,6 @@ bool HashMap::insert(const kmer_pair& kmer) {
     return cleared;
 
 }
-
 
 bool HashMap::send_all_buffers() {
     // cleanup function 
@@ -211,7 +213,6 @@ return true;
 }
 
 
-///*
 upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf) {
   
   return upcxx::rpc(remote_dst.where(),
@@ -227,27 +228,45 @@ upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> r
     remote_dst, sending_rank, buf);
 }
 
-//*/
 
-/*
-upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf) {
+
+
+upcxx::future<kmer_pair> HashMap::find_rpc(upcxx::global_ptr<int> remote_dst_used, upcxx::global_ptr<kmer_pair> remote_dst_data, 
+                            const pkmer_t &kmer_key_to_find, int slot_to_start, int local_proc_size) {
   
-  return upcxx::rpc(remote_dst.where(),
-    [](const upcxx::global_ptr<std::vector<kmer_pair>> &dst, const int & sender_rank, const upcxx::view<kmer_pair>& buf_in_rpc) {
-      
-        std::vector<kmer_pair> * dst_recv_buff = dst.local(); 
+  return upcxx::rpc(remote_dst_used.where(),
+    [](const upcxx::global_ptr<int> dst_used,  const upcxx::global_ptr<kmer_pair> dst_data, 
+                           const pkmer_t &kmer_key, int starting_slot, int proc_size) {
 
-        for(kmer_pair const &kmer_it: buf_in_rpc) {
-            dst_recv_buff[sender_rank].insert(kmer_it);
-        }
-    
-    
+        int * dst_used_loc = dst_used.local();
+        kmer_pair * dst_data_loc = dst_data.local();
+        uint64_t probe = 0;
+        bool success = false;
+        kmer_pair kmer_val;
+
+        do {
+            uint64_t slot = (starting_slot + probe++) % proc_size;
+            // See if the slot is used
+            int is_slot_used = dst_used_loc[slot];
+            if (is_slot_used == 1) {
+                // Get the kmer
+                kmer_val = dst_data_loc[slot];
+                //std::cout << "probing ... " << kmer_val.kmer.get() << std::endl;
+                if (kmer_val.kmer == kmer_key) {
+                    //std::cout << kmer_val.kmer.get() << std::endl;
+
+                    success = true;
+
+                } 
+            }
+        } while (!success && probe < proc_size);
+
+         return kmer_val;
 
     },
-    remote_dst, sending_rank, buf.data());
+    remote_dst_used, remote_dst_data, kmer_key_to_find, slot_to_start, local_proc_size);
 }
 
-*/
 
 bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     uint64_t hash = key_kmer.hash();
@@ -257,10 +276,8 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
     // Get the index of the processor that has the slot for the hash
     int target_proc_index = global_slot / local_size();
 
-    //std::cout << upcxx::rank_me() << " is looking in target_proc_index  " << target_proc_index << std::endl;
-
     int my_rank = upcxx::rank_me();
-    uint64_t local_slot = (hash % size() ) % local_size();
+    uint64_t local_slot = global_slot % local_size();
     uint64_t probe = 0;
 
     if (target_proc_index != my_rank) {
@@ -269,22 +286,9 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
         upcxx::global_ptr<int> target_proc_used_pointer = used_g->fetch(target_proc_index).wait();
         upcxx::global_ptr<kmer_pair> target_proc_data_pointer = data_g->fetch(target_proc_index).wait();
 
-        do {
-            uint64_t slot = (local_slot + probe++) % local_size();
-            // See if the slot is used
-            int is_slot_used = upcxx::rget(target_proc_used_pointer+slot).wait();
-            if (is_slot_used == 1) {
+        val_kmer = find_rpc(target_proc_used_pointer, target_proc_data_pointer, key_kmer, local_slot, local_size()).wait();
 
-                // Get the kmer
-                val_kmer = upcxx::rget(target_proc_data_pointer+slot).wait();
-                 if (val_kmer.kmer == key_kmer) {
-                    success = true;
-                    return success;      
-                } 
-            }
-        } while (!success && probe < local_size());
-        return success;
-
+        return true;
         }
 
     else {
@@ -309,6 +313,7 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
 }
 
 
+
 bool HashMap::slot_used(uint64_t slot) { return used_loc[slot] != 0; }
 
 void HashMap::write_slot(uint64_t slot, const kmer_pair& kmer) { data_loc[slot] = kmer; }
@@ -331,4 +336,3 @@ size_t HashMap::local_size() const noexcept { return local_table_size; }
 HashMap::~HashMap() {
     delete [] how_many_in_buffer;
 }
-
