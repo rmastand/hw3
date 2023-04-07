@@ -229,8 +229,6 @@ upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> r
 }
 
 
-
-
 upcxx::future<kmer_pair> HashMap::find_rpc(upcxx::global_ptr<int> remote_dst_used, upcxx::global_ptr<kmer_pair> remote_dst_data, 
                             const pkmer_t &kmer_key_to_find, int slot_to_start, int local_proc_size) {
   
@@ -251,18 +249,13 @@ upcxx::future<kmer_pair> HashMap::find_rpc(upcxx::global_ptr<int> remote_dst_use
             if (is_slot_used == 1) {
                 // Get the kmer
                 kmer_val = dst_data_loc[slot];
-                //std::cout << "probing ... " << kmer_val.kmer.get() << std::endl;
                 if (kmer_val.kmer == kmer_key) {
-                    //std::cout << kmer_val.kmer.get() << std::endl;
-
                     success = true;
-
                 } 
             }
         } while (!success && probe < proc_size);
 
          return kmer_val;
-
     },
     remote_dst_used, remote_dst_data, kmer_key_to_find, slot_to_start, local_proc_size);
 }
