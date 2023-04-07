@@ -4,6 +4,8 @@
 #include <upcxx/upcxx.hpp>
 #include <iostream>
 
+#define BUFFER_SIZE 40
+
 struct HashMap {
 
     size_t full_table_size;
@@ -12,7 +14,6 @@ struct HashMap {
     size_t local_table_size;
     size_t local_size() const noexcept;
 
-    size_t buffer_size;
     int* how_many_in_buffer;
 
     // Downcasted objects
@@ -26,7 +27,7 @@ struct HashMap {
     upcxx::dist_object<upcxx::global_ptr<kmer_pair>> *data_g;
     upcxx::dist_object<upcxx::global_ptr<int>> *used_g;
 
-    HashMap(size_t full_table_size1, size_t local_table_size1, size_t buffer_size1, 
+    HashMap(size_t full_table_size1, size_t local_table_size1, 
             std::vector<kmer_pair> * send_buff1,
             upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &recv_buffer_g1,
             upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g1,
@@ -56,7 +57,7 @@ struct HashMap {
     bool slot_used(uint64_t slot);
 };
 
-HashMap::HashMap(size_t full_table_size1, size_t local_table_size1, size_t buffer_size1, 
+HashMap::HashMap(size_t full_table_size1, size_t local_table_size1,
         std::vector<kmer_pair> * send_buff1,
         upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> &recv_buffer_g1,
         upcxx::dist_object<upcxx::global_ptr<kmer_pair>> &data_g1,
@@ -65,7 +66,6 @@ HashMap::HashMap(size_t full_table_size1, size_t local_table_size1, size_t buffe
     // Constants
     full_table_size = full_table_size1;
     local_table_size = local_table_size1;
-    buffer_size = buffer_size1;
 
     // Buffers
     send_buff = send_buff1;
@@ -106,7 +106,7 @@ bool HashMap::insert(const kmer_pair& kmer) {
     int my_rank = upcxx::rank_me();
 
     // Send out any filled buffers if buffer size reached
-    if (how_many_in_buffer[target_proc_index] == buffer_size) {
+    if (how_many_in_buffer[target_proc_index] == BUFFER_SIZE) {
 
         // If sending to another processor
         if (target_proc_index != my_rank) {
@@ -228,6 +228,7 @@ upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> r
 }
 
 //*/
+
 /*
 upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> remote_dst, int sending_rank, std::vector<kmer_pair> buf) {
   
@@ -236,19 +237,14 @@ upcxx::future<> HashMap::send_buffer(upcxx::global_ptr<std::vector<kmer_pair>> r
       
         std::vector<kmer_pair> * dst_recv_buff = dst.local(); 
 
-        kmer_pair * buffer_content = buf_in_rpc.data();
-
-        for (int ii = 0; ii << buf_in_rpc.size(); ii++) {
-
-            dst_recv_buff[sender_rank].push_back(buffer_content[ii]);
-
-
+        for(kmer_pair const &kmer_it: buf_in_rpc) {
+            dst_recv_buff[sender_rank].insert(kmer_it);
         }
     
     
 
     },
-    remote_dst, sending_rank, buf);
+    remote_dst, sending_rank, buf.data());
 }
 
 */
@@ -292,7 +288,6 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
         }
 
     else {
-      
         do {
             uint64_t slot = (local_slot + probe++) % local_size();
 
@@ -302,12 +297,10 @@ bool HashMap::find(const pkmer_t& key_kmer, kmer_pair& val_kmer) {
 
                 // Get the kmer
                 val_kmer = data_loc[slot];
-
                 if (val_kmer.kmer == key_kmer) {
                     success = true;
                     return success;      
                 } 
-                //std::cout << "found " << key_kmer.get() << std::endl;
             }
         } while (!success && probe < local_size());
         return success;
@@ -336,7 +329,6 @@ size_t HashMap::size() const noexcept { return full_table_size; }
 size_t HashMap::local_size() const noexcept { return local_table_size; }
 
 HashMap::~HashMap() {
-    // Need to destroy the atomic domain when the hashmap is destroyed
     delete [] how_many_in_buffer;
 }
 
