@@ -62,19 +62,17 @@ int main(int argc, char** argv) {
     // The buffer is in array of size num_procs
         // Each array element is a vector of kmer_pairs
         // i.e. vector<kmer_pair> v[num_procs];
-
-
-    // Do I need to allocated the buffer memory??
-    // do some sort of memset
-    //upcxx::global_ptr<std::vector<kmer_pair>> send_buff_ptr = upcxx::new_array<std::vector<kmer_pair>>(num_procs);
     std::vector<kmer_pair> send_buffer[num_procs];
     upcxx::global_ptr<std::vector<kmer_pair>> recv_buff_ptr = upcxx::new_array<std::vector<kmer_pair>>(num_procs);
-     // memset(recv_buff.local(), 0x00, N * sizeof(double));
-
-    //upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> send_buffer_g(send_buff_ptr);
     upcxx::dist_object<upcxx::global_ptr<std::vector<kmer_pair>>> recv_buffer_g(recv_buff_ptr);
+
+    // Create the distributed objects for data and used
+    // both of these are arrays
+    upcxx::dist_object<upcxx::global_ptr<kmer_pair>> data_g(upcxx::new_array<kmer_pair>(proc_hash_table_size));
+    upcxx::dist_object<upcxx::global_ptr<int>> used_g(upcxx::new_array<int>(proc_hash_table_size));
+
     // Instantiate the hash table
-    HashMap hashmap(hash_table_size, proc_hash_table_size, buffer_size, send_buffer, recv_buffer_g);
+    HashMap hashmap(hash_table_size, proc_hash_table_size, buffer_size, send_buffer, recv_buffer_g, data_g, used_g);
     if (run_type == "verbose") {
         BUtil::print("Initializing hash table of size %d for %d kmers.\n", hash_table_size,
                      n_kmers);
@@ -91,6 +89,7 @@ int main(int argc, char** argv) {
     
 
     for (auto& kmer : kmers) {
+       // std::cout << "working on kmer " << kmer.kmer.get() << std::endl;
         bool success = hashmap.insert(kmer);
         if (!success) {
             throw std::runtime_error("Error: HashMap is full!");
@@ -102,7 +101,11 @@ int main(int argc, char** argv) {
     }
 
     // clean up to clear the buffer
-    // send all remining and hash all remaining
+    upcxx::barrier();
+    hashmap.send_all_buffers();
+    upcxx::barrier();
+    hashmap.clear_buffer();
+
 
 
     auto end_insert = std::chrono::high_resolution_clock::now();
@@ -121,10 +124,11 @@ int main(int argc, char** argv) {
 
     std::list<std::list<kmer_pair>> contigs;
 
+
     for (const auto& start_kmer : start_nodes) {
+        
         std::list<kmer_pair> contig;
         contig.push_back(start_kmer);
-        
         while (contig.back().forwardExt() != 'F') {
             kmer_pair kmer;
             bool success = hashmap.find(contig.back().next_kmer(), kmer);
@@ -135,6 +139,7 @@ int main(int argc, char** argv) {
         }
         contigs.push_back(contig);
     }
+
 
 
     auto end_read = std::chrono::high_resolution_clock::now();
