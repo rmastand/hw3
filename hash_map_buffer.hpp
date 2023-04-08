@@ -4,7 +4,7 @@
 #include <upcxx/upcxx.hpp>
 #include <iostream>
 
-#define BUFFER_SIZE 40
+#define BUFFER_SIZE 32
 
 struct HashMap {
 
